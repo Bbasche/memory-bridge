@@ -203,14 +203,20 @@ export class MemoryBridge {
       // Ensure directory exists
       await fs.mkdir(dir, { recursive: true });
 
-      const watcher = watch(path.join(dir, '*.md'), {
+      const watcher = watch(dir, {
         ignoreInitial: true,
+        depth: 0,
         awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
       });
 
-      watcher.on('add', (filePath) => this._debounced(adapterName, filePath, 'change'));
-      watcher.on('change', (filePath) => this._debounced(adapterName, filePath, 'change'));
-      watcher.on('unlink', (filePath) => this._debounced(adapterName, filePath, 'delete'));
+      const handleEvent = (eventType) => (filePath) => {
+        if (!filePath.endsWith('.md')) return;
+        this._debounced(adapterName, filePath, eventType);
+      };
+
+      watcher.on('add', handleEvent('change'));
+      watcher.on('change', handleEvent('change'));
+      watcher.on('unlink', handleEvent('delete'));
 
       this.watchers.push(watcher);
       console.log(`  Watching ${dir} (${adapterName})`);
