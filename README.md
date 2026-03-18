@@ -16,20 +16,31 @@ Or run directly:
 npx memory-bridge
 ```
 
+## Quick start
+
+```bash
+# 1. Install cross-agent instructions (tells each agent about the bridge)
+memory-bridge setup
+
+# 2. Auto-discover Codex project memory dirs
+memory-bridge scan
+
+# 3. Run initial sync
+memory-bridge sync
+
+# 4. Start watching (foreground)
+memory-bridge start
+```
+
 ## Usage
 
 ```bash
-# Start watching and syncing (runs in foreground)
-memory-bridge start
-
-# One-time sync, then exit
-memory-bridge sync
-
-# Show what's synced
-memory-bridge status
-
-# Show config
-memory-bridge config
+memory-bridge start       # Watch and sync in real-time (default)
+memory-bridge sync        # One-time sync, then exit
+memory-bridge setup       # Install cross-agent instructions into each harness
+memory-bridge scan        # Auto-discover Codex project memory dirs
+memory-bridge status      # Show what's synced
+memory-bridge config      # Show config
 ```
 
 ## How it works
@@ -39,6 +50,18 @@ memory-bridge config
 3. When a memory is created or updated, it syncs to all other adapters
 4. Each synced memory is tagged with its **origin** so agents know "this is mine" vs "this came from another agent"
 5. Content hashing prevents infinite sync loops and redundant writes
+
+### Cross-agent awareness
+
+Running `memory-bridge setup` installs instructions into each agent's config so they know:
+
+- **Where bridged memories live** and how to find them
+- **How to identify** which memories are native vs bridged (via source tags)
+- **What to do** when asked about another agent's work (read the bridged files)
+- **That saving memories works automatically** — the bridge handles sync
+
+For **Codex**, instructions go into `~/.codex/AGENTS.md`.
+For **Claude Code**, instructions go into the project-level `CLAUDE.md`.
 
 ### Memory provenance
 
@@ -66,6 +89,10 @@ The memory content...
 
 Both agents can immediately see where a memory came from and treat it accordingly.
 
+### Codex project-level memories
+
+Codex writes project memories to `<project>/memory/` as dated journal files (e.g., `2026-03-18.md`). Run `memory-bridge scan` to auto-discover these directories and add them to the bridge config. They sync to Claude Code prefixed with the project name for uniqueness.
+
 ## Config
 
 Config lives at `~/.memory-bridge/config.json`. Created automatically on first run.
@@ -79,7 +106,10 @@ Config lives at `~/.memory-bridge/config.json`. Created automatically on first r
     },
     "codex": {
       "type": "codex",
-      "memoryDir": "~/.codex/memories"
+      "memoryDir": "~/.codex/memories",
+      "projectDirs": [
+        "~/my-project"
+      ]
     }
   },
   "syncDeletes": false,
@@ -89,6 +119,7 @@ Config lives at `~/.memory-bridge/config.json`. Created automatically on first r
 
 - **syncDeletes**: When `true`, deleting a memory in one agent removes it from all others
 - **syncBackToOrigin**: When `true`, a memory bridged from Agent A and modified in Agent B will sync back to A
+- **projectDirs** (Codex): Project root directories that contain `memory/` subdirs with Codex's dated journals
 
 ## Adding a new adapter
 
@@ -104,7 +135,7 @@ export class CursorAdapter extends BaseAdapter {
 
   getIgnorePatterns() { return []; }
 
-  parseMemory(filename, content) {
+  parseMemory(filename, content, dir) {
     return {
       name: '...',
       description: '...',
@@ -144,10 +175,11 @@ And add to your config:
 }
 ```
 
+Add cross-agent instructions for the new adapter in `src/agent-instructions.js` and `memory-bridge setup` will install them.
+
 ## Run as a background service (macOS)
 
 ```bash
-# Create a launchd plist
 cat > ~/Library/LaunchAgents/com.memory-bridge.plist << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

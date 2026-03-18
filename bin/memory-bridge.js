@@ -3,6 +3,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { MemoryBridge } from '../src/bridge.js';
+import { CODEX_INSTRUCTIONS, CLAUDE_CODE_INSTRUCTIONS } from '../src/agent-instructions.js';
 
 const CONFIG_DIR = path.join(process.env.HOME, '.memory-bridge');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -49,6 +50,7 @@ memory-bridge — two-way memory sync between AI coding agents
 Usage:
   memory-bridge start       Start watching and syncing (default)
   memory-bridge sync        One-time sync, then exit
+  memory-bridge setup       Install cross-agent instructions into each harness
   memory-bridge scan        Auto-discover Codex project memory dirs
   memory-bridge status      Show current sync state
   memory-bridge config      Show config location and contents
@@ -140,6 +142,87 @@ async function runScan() {
   console.log(`Restart the bridge to pick them up.`);
 }
 
+/** Install cross-agent instructions into each harness */
+async function runSetup() {
+  const config = await loadConfig();
+  const home = process.env.HOME;
+  const installed = [];
+
+  // Codex: write to ~/.codex/AGENTS.md
+  if (config.adapters.codex || config.adapters['codex']) {
+    const agentsFile = path.join(home, '.codex', 'AGENTS.md');
+    const marker = '# Memory Bridge';
+
+    let existing = '';
+    try {
+      existing = await fs.readFile(agentsFile, 'utf-8');
+    } catch {
+      // File doesn't exist
+    }
+
+    if (existing.includes(marker)) {
+      // Replace existing memory bridge section
+      const before = existing.slice(0, existing.indexOf(marker));
+      // Find the next top-level heading after the marker, or end of file
+      const afterMarker = existing.slice(existing.indexOf(marker) + marker.length);
+      const nextH1 = afterMarker.search(/\n# [^#]/);
+      const after = nextH1 >= 0 ? afterMarker.slice(nextH1) : '';
+      await fs.writeFile(agentsFile, before.trimEnd() + '\n\n' + CODEX_INSTRUCTIONS.trim() + '\n' + after, 'utf-8');
+      installed.push('codex (~/.codex/AGENTS.md) — updated');
+    } else {
+      // Append
+      const prefix = existing.trim() ? existing.trimEnd() + '\n\n' : '';
+      await fs.writeFile(agentsFile, prefix + CODEX_INSTRUCTIONS.trim() + '\n', 'utf-8');
+      installed.push('codex (~/.codex/AGENTS.md) — installed');
+    }
+  }
+
+  // Claude Code: write to the CLAUDE.md nearest to the memory dir
+  const ccConfig = config.adapters['claude-code'];
+  if (ccConfig) {
+    const memDir = (ccConfig.memoryDir || ccConfig.memoryDirs?.[0] || '').replace(/^~/, home);
+    // Walk up from memory dir to find or create a CLAUDE.md
+    // Typically memory is at ~/.claude/projects/<path>/memory/
+    // CLAUDE.md goes in the project dir (one level up)
+    const projectDir = path.dirname(memDir);
+    const claudeMdFile = path.join(projectDir, 'CLAUDE.md');
+
+    let existing = '';
+    try {
+      existing = await fs.readFile(claudeMdFile, 'utf-8');
+    } catch {
+      // File doesn't exist
+    }
+
+    const marker = '## Memory Bridge';
+
+    if (existing.includes(marker)) {
+      // Replace existing section
+      const before = existing.slice(0, existing.indexOf(marker));
+      const afterMarker = existing.slice(existing.indexOf(marker) + marker.length);
+      const nextH2 = afterMarker.search(/\n## [^#]/);
+      const after = nextH2 >= 0 ? afterMarker.slice(nextH2) : '';
+      await fs.writeFile(claudeMdFile, before.trimEnd() + '\n\n' + CLAUDE_CODE_INSTRUCTIONS.trim() + '\n' + after, 'utf-8');
+      installed.push(`claude-code (${claudeMdFile}) — updated`);
+    } else {
+      const prefix = existing.trim() ? existing.trimEnd() + '\n\n' : '';
+      await fs.writeFile(claudeMdFile, prefix + CLAUDE_CODE_INSTRUCTIONS.trim() + '\n', 'utf-8');
+      installed.push(`claude-code (${claudeMdFile}) — installed`);
+    }
+  }
+
+  if (installed.length === 0) {
+    console.log('No adapters configured. Run `memory-bridge start` first.');
+    return;
+  }
+
+  console.log('Cross-agent instructions installed:\n');
+  for (const msg of installed) {
+    console.log(`  ${msg}`);
+  }
+  console.log('\nEach agent now knows about the bridge and how to find memories from other agents.');
+}
+
 async function showStatus() {
   const stateFile = path.join(CONFIG_DIR, 'state.json');
   try {
@@ -194,6 +277,10 @@ switch (command) {
 
   case 'config':
     await showConfig();
+    break;
+
+  case 'setup':
+    await runSetup();
     break;
 
   case 'scan':
