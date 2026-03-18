@@ -1,28 +1,61 @@
 import { BaseAdapter } from './base.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 /**
  * Codex (OpenAI) adapter.
  *
- * Memory format: Plain markdown files in ~/.codex/memories/
- * No frontmatter, no index file. Codex reads all .md files as context.
+ * Supports two memory patterns:
+ * 1. Global: ~/.codex/memories/ — flat .md files
+ * 2. Project-level: <project>/memory/ — dated .md files (2026-03-18.md)
+ *    with a MEMORY.md index in the project root
+ *
+ * Both are watched. Writes go to the global dir. Project-level memories
+ * are synced out with a project prefix to avoid filename collisions.
  */
 export class CodexAdapter extends BaseAdapter {
   constructor(config) {
     super('codex', config);
+    // Project dirs: paths to project roots that contain memory/ subdirs
+    this.projectDirs = (config.projectDirs || []).map(d =>
+      d.replace(/^~/, process.env.HOME)
+    );
+  }
+
+  /** Watch the global memories dir + all project memory/ subdirs */
+  getWatchDirs() {
+    const dirs = [...this.memoryDirs];
+    for (const projDir of this.projectDirs) {
+      dirs.push(path.join(projDir, 'memory'));
+    }
+    return dirs;
   }
 
   getIgnorePatterns() {
-    return [];
+    return ['MEMORY.md'];
   }
 
-  parseMemory(filename, content) {
+  parseMemory(filename, content, dir) {
+    // Check if this is from a project dir (vs global)
+    const projectDir = this.projectDirs.find(p =>
+      dir === path.join(p, 'memory')
+    );
+
     // Extract metadata from bridge header block if present
     const meta = extractBridgeHeader(content);
     const body = stripBridgeHeader(content);
 
+    let name = meta.name || filenameToName(filename);
+
+    // Prefix project-level memories with project name for uniqueness
+    if (projectDir && !meta.name) {
+      const projectName = path.basename(projectDir);
+      name = `${projectName} — ${name}`;
+    }
+
     return {
-      name: meta.name || filenameToName(filename),
-      description: meta.description || '',
+      name,
+      description: meta.description || (projectDir ? `Project memory from ${path.basename(projectDir)}` : ''),
       type: meta.type || 'project',
       body,
       source: meta.source || 'codex',

@@ -44,12 +44,15 @@ export class SyncState {
     return this.state.synced[bridgeId] || null;
   }
 
-  /** Find a synced entry by adapter + filename */
-  findByFile(adapterName, filename) {
+  /** Find a synced entry by adapter + filename (with optional dir) */
+  findByFile(adapterName, filename, dir) {
     for (const [id, entry] of Object.entries(this.state.synced)) {
-      if (entry.files[adapterName] === filename) {
-        return { id, ...entry };
-      }
+      const stored = entry.files[adapterName];
+      if (!stored) continue;
+      // Match full path (dir/filename) or just filename for backward compat
+      if (dir && stored === `${dir}/${filename}`) return { id, ...entry };
+      if (stored === filename) return { id, ...entry };
+      if (stored.endsWith(`/${filename}`)) return { id, ...entry };
     }
     return null;
   }

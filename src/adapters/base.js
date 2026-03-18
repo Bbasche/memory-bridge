@@ -6,17 +6,26 @@ export class BaseAdapter {
   constructor(name, config) {
     this.name = name;
     this.config = config;
-    this.memoryDir = config.memoryDir;
+    // Support both single memoryDir and array memoryDirs
+    // First dir is the "primary" (write target)
+    if (config.memoryDirs) {
+      this.memoryDirs = config.memoryDirs;
+    } else if (config.memoryDir) {
+      this.memoryDirs = [config.memoryDir];
+    } else {
+      this.memoryDirs = [];
+    }
+    this.memoryDir = this.memoryDirs[0] || null;
   }
 
-  /** Return the directory to watch for memory changes */
-  getWatchDir() {
+  /** Return all directories to watch for memory changes */
+  getWatchDirs() {
+    return this.memoryDirs;
+  }
+
+  /** Return the primary directory (write target) */
+  getWriteDir() {
     return this.memoryDir;
-  }
-
-  /** Glob pattern for memory files within the watch dir */
-  getWatchPattern() {
-    return '*.md';
   }
 
   /** Files to ignore (e.g., index files that shouldn't be treated as memories) */
@@ -28,9 +37,10 @@ export class BaseAdapter {
    * Parse a native memory file into canonical format.
    * @param {string} filename - The filename (not full path)
    * @param {string} content - Raw file content
+   * @param {string} dir - The directory the file is in
    * @returns {{ name, description, type, body, source }} Canonical memory
    */
-  parseMemory(filename, content) {
+  parseMemory(filename, content, dir) {
     throw new Error(`${this.name}: parseMemory() not implemented`);
   }
 

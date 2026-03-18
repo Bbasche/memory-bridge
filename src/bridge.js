@@ -33,7 +33,8 @@ export class MemoryBridge {
       }
       const resolvedConfig = {
         ...adapterConfig,
-        memoryDir: adapterConfig.memoryDir.replace(/^~/, process.env.HOME),
+        memoryDir: adapterConfig.memoryDir?.replace(/^~/, process.env.HOME),
+        memoryDirs: adapterConfig.memoryDirs?.map(d => d.replace(/^~/, process.env.HOME)),
       };
       this.adapters.set(name, new AdapterClass(resolvedConfig));
     }
@@ -45,25 +46,27 @@ export class MemoryBridge {
     await this.state.load();
 
     for (const [sourceName, sourceAdapter] of this.adapters) {
-      const dir = sourceAdapter.getWatchDir();
+      const dirs = sourceAdapter.getWatchDirs();
       const ignorePatterns = sourceAdapter.getIgnorePatterns();
 
-      let files;
-      try {
-        files = await fs.readdir(dir);
-      } catch {
-        console.log(`  ${sourceName}: directory not found (${dir}), skipping`);
-        continue;
-      }
+      for (const dir of dirs) {
+        let files;
+        try {
+          files = await fs.readdir(dir);
+        } catch {
+          console.log(`  ${sourceName}: directory not found (${dir}), skipping`);
+          continue;
+        }
 
-      const mdFiles = files.filter(f =>
-        f.endsWith('.md') && !ignorePatterns.includes(f)
-      );
+        const mdFiles = files.filter(f =>
+          f.endsWith('.md') && !ignorePatterns.includes(f)
+        );
 
-      console.log(`  ${sourceName}: found ${mdFiles.length} memories in ${dir}`);
+        console.log(`  ${sourceName}: found ${mdFiles.length} memories in ${dir}`);
 
-      for (const filename of mdFiles) {
-        await this.syncFile(sourceName, filename);
+        for (const filename of mdFiles) {
+          await this.syncFile(sourceName, filename, dir);
+        }
       }
     }
 
@@ -72,9 +75,11 @@ export class MemoryBridge {
   }
 
   /** Sync a single file from source adapter to all other adapters */
-  async syncFile(sourceName, filename) {
+  async syncFile(sourceName, filename, sourceDir) {
     const sourceAdapter = this.adapters.get(sourceName);
-    const filePath = path.join(sourceAdapter.getWatchDir(), filename);
+    // Use provided dir, or fall back to primary write dir
+    const dir = sourceDir || sourceAdapter.getWriteDir();
+    const filePath = path.join(dir, filename);
 
     let content;
     try {
@@ -83,16 +88,18 @@ export class MemoryBridge {
       return; // File disappeared
     }
 
-    // Parse the memory
-    const memory = sourceAdapter.parseMemory(filename, content);
+    // Parse the memory (pass dir for project-level context)
+    const memory = sourceAdapter.parseMemory(filename, content, dir);
 
     // If this memory originated from a bridge sync, don't re-sync it back
-    // (it would bounce forever). But DO sync it to OTHER adapters it hasn't reached.
     const originalSource = memory.source;
 
     // Find or create bridge ID
     let bridgeId = memory.bridgeId;
-    let existing = bridgeId ? this.state.get(bridgeId) : this.state.findByFile(sourceName, filename);
+    const stateKey = `${sourceName}:${dir}:${filename}`;
+    let existing = bridgeId
+      ? this.state.get(bridgeId)
+      : this.state.findByFile(sourceName, filename, dir);
 
     if (existing && !bridgeId) {
       bridgeId = existing.id;
@@ -116,16 +123,17 @@ export class MemoryBridge {
       // Don't sync back to the adapter that originally created this memory
       if (originalSource === targetName && !this.config.syncBackToOrigin) continue;
 
+      const writeDir = targetAdapter.getWriteDir();
       const formatted = targetAdapter.formatMemory({
         ...memory,
         sourceAdapter: sourceName,
         bridgeId,
       });
 
-      const targetPath = path.join(targetAdapter.getWatchDir(), formatted.filename);
+      const targetPath = path.join(writeDir, formatted.filename);
 
       // Ensure target directory exists
-      await fs.mkdir(targetAdapter.getWatchDir(), { recursive: true });
+      await fs.mkdir(writeDir, { recursive: true });
 
       // Check if target file already exists with same content
       try {
@@ -143,7 +151,6 @@ export class MemoryBridge {
         await targetAdapter.afterWrite({ ...memory, sourceAdapter: sourceName }, formatted.filename);
         console.log(`  ${sourceName}/${filename} → ${targetName}/${formatted.filename}`);
       } finally {
-        // Delay clearing the write flag to let the watcher debounce settle
         setTimeout(() => this.state.endWrite(targetName), 500);
       }
 
@@ -153,8 +160,8 @@ export class MemoryBridge {
         hash: contentHash,
         files: {
           ...(existing?.files || {}),
-          [sourceName]: filename,
-          [targetName]: formatted.filename,
+          [sourceName]: `${dir}/${filename}`,
+          [targetName]: `${writeDir}/${formatted.filename}`,
         },
       });
     }
@@ -163,22 +170,23 @@ export class MemoryBridge {
   }
 
   /** Handle a file deletion */
-  async handleDelete(sourceName, filename) {
-    const existing = this.state.findByFile(sourceName, filename);
+  async handleDelete(sourceName, filename, sourceDir) {
+    const sourceAdapter = this.adapters.get(sourceName);
+    const dir = sourceDir || sourceAdapter.getWriteDir();
+    const existing = this.state.findByFile(sourceName, filename, dir);
     if (!existing) return;
 
     if (this.config.syncDeletes) {
-      for (const [adapterName, adapterFilename] of Object.entries(existing.files)) {
+      for (const [adapterName, filePath] of Object.entries(existing.files)) {
         if (adapterName === sourceName) continue;
         const adapter = this.adapters.get(adapterName);
         if (!adapter) continue;
 
-        const targetPath = path.join(adapter.getWatchDir(), adapterFilename);
         try {
           this.state.startWrite(adapterName);
-          await fs.unlink(targetPath);
-          await adapter.afterDelete(adapterFilename);
-          console.log(`  Deleted ${adapterName}/${adapterFilename} (source deleted)`);
+          await fs.unlink(filePath);
+          await adapter.afterDelete(path.basename(filePath));
+          console.log(`  Deleted ${filePath} (source deleted)`);
         } catch {
           // Already gone
         } finally {
@@ -197,34 +205,35 @@ export class MemoryBridge {
     console.log('Starting file watchers...');
 
     for (const [adapterName, adapter] of this.adapters) {
-      const dir = adapter.getWatchDir();
-      const ignorePatterns = adapter.getIgnorePatterns();
+      const dirs = adapter.getWatchDirs();
 
-      // Ensure directory exists
-      await fs.mkdir(dir, { recursive: true });
+      for (const dir of dirs) {
+        // Ensure directory exists
+        await fs.mkdir(dir, { recursive: true });
 
-      const watcher = watch(dir, {
-        ignoreInitial: true,
-        depth: 0,
-        awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
-      });
+        const watcher = watch(dir, {
+          ignoreInitial: true,
+          depth: 0,
+          awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+        });
 
-      const handleEvent = (eventType) => (filePath) => {
-        if (!filePath.endsWith('.md')) return;
-        this._debounced(adapterName, filePath, eventType);
-      };
+        const handleEvent = (eventType) => (filePath) => {
+          if (!filePath.endsWith('.md')) return;
+          this._debounced(adapterName, filePath, eventType, dir);
+        };
 
-      watcher.on('add', handleEvent('change'));
-      watcher.on('change', handleEvent('change'));
-      watcher.on('unlink', handleEvent('delete'));
+        watcher.on('add', handleEvent('change'));
+        watcher.on('change', handleEvent('change'));
+        watcher.on('unlink', handleEvent('delete'));
 
-      this.watchers.push(watcher);
-      console.log(`  Watching ${dir} (${adapterName})`);
+        this.watchers.push(watcher);
+        console.log(`  Watching ${dir} (${adapterName})`);
+      }
     }
   }
 
   /** Debounce file events to avoid rapid-fire syncs */
-  _debounced(adapterName, filePath, eventType) {
+  _debounced(adapterName, filePath, eventType, dir) {
     const key = `${adapterName}:${filePath}`;
     if (this._debounceTimers.has(key)) {
       clearTimeout(this._debounceTimers.get(key));
@@ -243,11 +252,11 @@ export class MemoryBridge {
       if (adapter.getIgnorePatterns().includes(filename)) return;
 
       if (eventType === 'delete') {
-        console.log(`[${adapterName}] Deleted: ${filename}`);
-        await this.handleDelete(adapterName, filename);
+        console.log(`[${adapterName}] Deleted: ${filename} (${dir})`);
+        await this.handleDelete(adapterName, filename, dir);
       } else {
-        console.log(`[${adapterName}] Changed: ${filename}`);
-        await this.syncFile(adapterName, filename);
+        console.log(`[${adapterName}] Changed: ${filename} (${dir})`);
+        await this.syncFile(adapterName, filename, dir);
       }
     }, 400));
   }
