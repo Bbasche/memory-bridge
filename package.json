@@ -1,0 +1,29 @@
+{
+  "name": "memory-bridge",
+  "version": "0.1.0",
+  "description": "Two-way memory sync between AI coding agents (Claude Code, Codex, and more)",
+  "type": "module",
+  "bin": {
+    "memory-bridge": "./bin/memory-bridge.js"
+  },
+  "main": "src/bridge.js",
+  "scripts": {
+    "start": "node bin/memory-bridge.js start",
+    "sync": "node bin/memory-bridge.js sync",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "sync",
+    "claude-code",
+    "codex",
+    "agent",
+    "bridge"
+  ],
+  "author": "Ben Basche",
+  "license": "MIT",
+  "dependencies": {
+    "chokidar": "^4.0.0"
+  }
+}

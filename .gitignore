@@ -1,0 +1,4 @@
+node_modules/
+.memory-bridge/state.json
+*.log
+.DS_Store
